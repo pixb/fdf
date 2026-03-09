@@ -2,7 +2,7 @@
     "info": "Lower values indicate higher priority for directory retention",
     "default_priority": 99,
     "directory_priority": {
-        "aaa": 98,
+        "aaa": 998,
         "bbb": 3,
         "ccc": 2
     }
