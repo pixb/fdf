@@ -331,6 +331,9 @@ func duplicateFileHandler(duplicateFiles map[string][]string, priorityConfig Pri
 				}
 			}
 		}
+		fmt.Println()
+		fmt.Println("-----------------")
+		fmt.Println()
 	}
 }
 
