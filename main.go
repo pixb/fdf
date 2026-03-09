@@ -271,6 +271,7 @@ func findDuplicateFiles(path string) map[string][]string {
 // 根据文件路径权限对文件列表进行排序。
 // 保留排序后列表的第一个文件，获取第一个文件的权重。
 // 处理第一个文件之后的文件列表，根据权重，删除文件。
+// 优先级判断策略：考虑目录深度，父路径的权重大于子目录，只在同级目录之间比较
 func duplicateFileHandler(duplicateFiles map[string][]string, priorityConfig PriorityConfig, dryRun bool) {
 	if len(duplicateFiles) == 0 {
 		return
@@ -278,30 +279,15 @@ func duplicateFileHandler(duplicateFiles map[string][]string, priorityConfig Pri
 
 	for hash, paths := range duplicateFiles {
 		fmt.Printf("Processing duplicate files with hash: %s\n", hash)
-		// 对paths进行排序，排序规则是文件最后路径名的权重
+		// 对paths进行排序，排序规则是基于目录深度和优先级
 		sort.Slice(paths, func(i, j int) bool {
-			// 获取文件最后路径名的权重, 优先级越高，权重越低
-			iPath := filepath.Base(filepath.Dir(paths[i]))
-			jPath := filepath.Base(filepath.Dir(paths[j]))
-			iWeight, ok := priorityConfig.DirectoryPriority[iPath]
-			if !ok {
-				iWeight = priorityConfig.DefaultPriority
-			}
-			jWeight, ok := priorityConfig.DirectoryPriority[jPath]
-			if !ok {
-				jWeight = priorityConfig.DefaultPriority
-			}
-			return iWeight < jWeight
+			return comparePathPriority(paths[i], paths[j], priorityConfig)
 		})
 		// keep the first file
 		firstFile := paths[0]
-		// 获取第一个文件的权重
-		firstPath := filepath.Dir(firstFile)
-		firstWeight, ok := priorityConfig.DirectoryPriority[filepath.Base(firstPath)]
-		if !ok {
-			firstWeight = priorityConfig.DefaultPriority
-		}
-		fmt.Printf("\tKeeping file: %s (priority: %d)\n", firstFile, firstWeight)
+		// 获取第一个文件的优先级信息
+		_, firstDepth, firstMatchedDir := getPathPriority(firstFile, priorityConfig)
+		fmt.Printf("\tKeeping file: %s (depth: %d, matched: %s)\n", firstFile, firstDepth, firstMatchedDir)
 		// 处理第一个文件之后的文件列表
 		for i := 1; i < len(paths); i++ {
 			path := paths[i]
@@ -311,14 +297,27 @@ func duplicateFileHandler(duplicateFiles map[string][]string, priorityConfig Pri
 				fmt.Printf("Error getting file info for %s: %v\n", path, err)
 				continue
 			}
-			// 获取文件路径权重
-			pathWeight, ok := priorityConfig.DirectoryPriority[filepath.Base(filepath.Dir(path))]
-			if !ok {
-				pathWeight = priorityConfig.DefaultPriority
-			}
-			// 如果文件路径权重大于等于第一个文件路径权重，则删除文件
-			if pathWeight >= firstWeight {
-				fmt.Printf("\tDeleting file: %s (priority: %d)\n", path, pathWeight)
+			// 获取文件路径的优先级和深度
+			_, pathDepth, pathMatchedDir := getPathPriority(path, priorityConfig)
+			// 如果匹配到同一个目录，深度大的删除；否则按排序结果删除
+			if firstMatchedDir == pathMatchedDir && firstMatchedDir != "" {
+				// 同级目录之间比较，深度大的删除
+				if pathDepth > firstDepth {
+					fmt.Printf("\tDeleting file: %s (depth: %d, matched: %s)\n", path, pathDepth, pathMatchedDir)
+					if !dryRun {
+						err := os.Remove(path)
+						if err != nil {
+							fmt.Printf("\tError deleting file %s: %v\n", path, err)
+							continue
+						}
+						fmt.Printf("\tSuccessfully deleted file: %s\n", path)
+					}
+				} else {
+					fmt.Printf("\tKeeping file: %s (depth: %d, matched: %s)\n", path, pathDepth, pathMatchedDir)
+				}
+			} else {
+				// 不同目录，按排序结果删除
+				fmt.Printf("\tDeleting file: %s (depth: %d, matched: %s)\n", path, pathDepth, pathMatchedDir)
 				if !dryRun {
 					err := os.Remove(path)
 					if err != nil {
@@ -327,11 +326,130 @@ func duplicateFileHandler(duplicateFiles map[string][]string, priorityConfig Pri
 					}
 					fmt.Printf("\tSuccessfully deleted file: %s\n", path)
 				}
-			} else {
-				fmt.Printf("\tKeeping file: %s (priority: %d)\n", path, pathWeight)
 			}
 		}
 	}
+}
+
+// getPathPriority 获取文件路径的优先级和深度
+// 优先级规则：
+// 1. 首先检查一级目录（相对于搜索路径的直接子目录）是否在配置中
+// 2. 如果一级目录在配置中，使用一级目录的优先级
+// 3. 如果一级目录不在配置中，向后查找子目录，使用第一个在配置中的子目录的优先级
+// 4. 如果没有找到配置中的目录，使用默认优先级
+// 返回优先级值、目录深度和匹配的目录名
+func getPathPriority(filePath string, priorityConfig PriorityConfig) (int, int, string) {
+	// 获取文件的目录路径
+	dirPath := filepath.Dir(filePath)
+	// 分割路径为各个目录组件
+	dirs := strings.Split(dirPath, string(filepath.Separator))
+
+	// 找到第一个非空目录作为基础目录
+	var baseDirIndex int
+	for i, dir := range dirs {
+		if dir != "" {
+			baseDirIndex = i
+			break
+		}
+	}
+
+	// 检查一级目录是否在配置中
+	if baseDirIndex+1 < len(dirs) {
+		firstLevelDir := dirs[baseDirIndex+1]
+		if priority, ok := priorityConfig.DirectoryPriority[firstLevelDir]; ok {
+			return priority, 1, firstLevelDir
+		}
+	}
+
+	// 如果一级目录不在配置中，向后查找子目录
+	for i := baseDirIndex + 2; i < len(dirs); i++ {
+		dir := dirs[i]
+		if dir == "" {
+			continue
+		}
+		if priority, ok := priorityConfig.DirectoryPriority[dir]; ok {
+			return priority, i - baseDirIndex, dir
+		}
+	}
+
+	// 如果没有找到配置中的目录，返回默认值
+	return priorityConfig.DefaultPriority, len(dirs) - baseDirIndex, ""
+}
+
+// comparePathPriority 比较两个文件路径的优先级
+// 优先级规则：
+// 1. 优先考虑一级目录的配置，一级目录有配置的文件优先于一级目录无配置的文件
+// 2. 如果两个文件的一级目录都有配置，按优先级排序（数值小的优先）
+// 3. 如果两个文件的一级目录都无配置，按找到的子目录优先级排序（数值小的优先）
+// 4. 如果优先级相同，深度小的优先（父目录优先）
+// 5. 如果都相同，按路径字典序排序
+func comparePathPriority(path1, path2 string, priorityConfig PriorityConfig) bool {
+	// 提取一级目录
+	dirPath1 := filepath.Dir(path1)
+	dirs1 := strings.Split(dirPath1, string(filepath.Separator))
+	var firstLevelDir1 string
+	for i, dir := range dirs1 {
+		if dir != "" {
+			if i+1 < len(dirs1) {
+				firstLevelDir1 = dirs1[i+1]
+			}
+			break
+		}
+	}
+
+	dirPath2 := filepath.Dir(path2)
+	dirs2 := strings.Split(dirPath2, string(filepath.Separator))
+	var firstLevelDir2 string
+	for i, dir := range dirs2 {
+		if dir != "" {
+			if i+1 < len(dirs2) {
+				firstLevelDir2 = dirs2[i+1]
+			}
+			break
+		}
+	}
+
+	// 检查一级目录是否在配置中
+	firstLevelHasConfig1 := false
+	if _, ok := priorityConfig.DirectoryPriority[firstLevelDir1]; ok {
+		firstLevelHasConfig1 = true
+	}
+
+	firstLevelHasConfig2 := false
+	if _, ok := priorityConfig.DirectoryPriority[firstLevelDir2]; ok {
+		firstLevelHasConfig2 = true
+	}
+
+	// 优先考虑一级目录有配置的文件
+	if firstLevelHasConfig1 != firstLevelHasConfig2 {
+		return firstLevelHasConfig1
+	}
+
+	// 如果一级目录都有配置或都无配置，使用原来的比较逻辑
+	priority1, depth1, matchedDir1 := getPathPriority(path1, priorityConfig)
+	priority2, depth2, matchedDir2 := getPathPriority(path2, priorityConfig)
+
+	// 如果匹配到同一个优先级目录，比较深度（深度小的优先）
+	if matchedDir1 == matchedDir2 && matchedDir1 != "" {
+		if depth1 != depth2 {
+			return depth1 < depth2
+		}
+		// 深度相同，按路径字典序排序
+		return path1 < path2
+	}
+
+	// 如果匹配到不同的优先级目录，按优先级排序（数值小的优先）
+	if priority1 != priority2 {
+		return priority1 < priority2
+	}
+
+	// 如果优先级相同但匹配到不同的目录，按深度排序
+	if depth1 != depth2 {
+		return depth1 < depth2
+	}
+
+	// 如果都相同，按路径字典序排序
+	return path1 < path2
 }
 
 func main() {
