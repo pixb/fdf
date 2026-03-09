@@ -1,4 +1,4 @@
-BINARY_NAME := find-duplicate-files
+BINARY_NAME := fdf
 VERSION := 1.0.0
 .PHONY: build install clean test
 

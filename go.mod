@@ -3,7 +3,6 @@ module github.com/pixb/fdf
 go 1.24.3
 
 require (
-	github.com/mitchellh/mapstructure v1.5.0
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.20.1
 )
