@@ -1,0 +1,9 @@
+{
+    "info": "Lower values indicate higher priority for directory retention",
+    "default_priority": 99,
+    "directory_priority": {
+        "aaa": 99,
+        "bbb": 3,
+        "ccc": 2
+    }
+}
