@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/md5"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,9 +21,9 @@ import (
 var Version = "development" // 由构建时注入
 
 type PriorityConfig struct {
-	Info              string
-	DefaultPriority   int            `mapstructure:"default_priority"`
-	DirectoryPriority map[string]int `mapstructure:"directory_priority"`
+	Info              string         `json:"info"`
+	DefaultPriority   int            `json:"default_priority"`
+	DirectoryPriority map[string]int `json:"directory_priority"`
 }
 
 var rootCmd = &cobra.Command{
@@ -48,29 +49,15 @@ var rootCmd = &cobra.Command{
 		// check config path exists.
 		if _, err := os.Stat(configFilePath); !os.IsNotExist(err) {
 			fmt.Println("Config file path:", configFilePath)
-			configPath := filepath.Dir(configFilePath)
-			viper.SetConfigName(strings.TrimSuffix(filepath.Base(configFilePath), filepath.Ext(configFilePath)))
-			viper.SetConfigType(filepath.Ext(configFilePath)[1:])
-			viper.AddConfigPath(configPath)
 
-			// read config file
-			if err := viper.ReadInConfig(); err != nil {
+			// 直接使用 JSON 解析配置文件，避免 Viper 自动拆分带点的键名
+			configData, err := os.ReadFile(configFilePath)
+			if err != nil {
 				fmt.Printf("Error reading config file: %v", err)
 				return
 			}
-			// 读取配置文件
-			// 检查关键配置项是否存在
-			requiredKeys := []string{"default_priority", "directory_priority"}
-			for _, key := range requiredKeys {
-				if !viper.IsSet(key) {
-					fmt.Println("Missing required config key = ", key)
-					return
-				}
-			}
 
-			// 使用简化的Unmarshal配置
-			viper.Set("Verbose", true)
-			if err := viper.Unmarshal(&priorityConfig); err != nil {
+			if err := json.Unmarshal(configData, &priorityConfig); err != nil {
 				fmt.Println("Error unmarshalling config = ", err)
 				return
 			}
