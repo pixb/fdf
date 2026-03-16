@@ -1,5 +1,5 @@
 BINARY_NAME := fdf
-VERSION := 1.0.0
+VERSION := 0.0.1
 .PHONY: build install clean test
 
 build:
