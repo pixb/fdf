@@ -1,9 +1,0 @@
-info: "Lower values indicate higher priority for directory retention"
-default_priority: 99
-directory_priority:
-  computer: 2
-  add: 99
-exclude:
-  - "@eaDir"
-min_size: 0
-max_size: 0
