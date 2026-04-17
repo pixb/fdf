@@ -44,7 +44,7 @@ make install
 ./fdf --path /path/to/search
 
 # With custom config
-./fdf --path /path/to/search --config config/fdf.example.json
+./fdf --path /path/to/search --config config/fdf.example.yaml
 
 # Dry run (preview only)
 ./fdf --path /path/to/search --dry-run
@@ -65,19 +65,16 @@ make install
 
 ## ⚙️ Configuration
 
-Create a JSON config file to set directory priorities:
+Create a YAML config file to set directory priorities:
 
-```json
-{
-  "info": "Lower values indicate higher priority for directory retention",
-  "default_priority": 99,
-  "directory_priority": {
-    "documents": 1,
-    "photos": 2,
-    "downloads": 99,
-    "temp": 100
-  }
-}
+```yaml
+# Lower values indicate higher priority for directory retention
+default_priority: 99
+directory_priority:
+  documents: 1
+  photos: 2
+  downloads: 99
+  temp: 100
 ```
 
 ## 📁 Project Structure

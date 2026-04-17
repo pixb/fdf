@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/md5"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,9 +20,18 @@ import (
 var Version = "development" // 由构建时注入
 
 type PriorityConfig struct {
-	Info              string         `json:"info"`
-	DefaultPriority   int            `json:"default_priority"`
-	DirectoryPriority map[string]int `json:"directory_priority"`
+	Info              string         `mapstructure:"info"`
+	DefaultPriority   int            `mapstructure:"default_priority"`
+	DirectoryPriority map[string]int `mapstructure:"directory_priority"`
+}
+
+type Config struct {
+	Info              string         `mapstructure:"info"`
+	DefaultPriority   int            `mapstructure:"default_priority"`
+	DirectoryPriority map[string]int `mapstructure:"directory_priority"`
+	Exclude           []string       `mapstructure:"exclude"`
+	MinSize           int64          `mapstructure:"min_size"`
+	MaxSize           int64          `mapstructure:"max_size"`
 }
 
 var rootCmd = &cobra.Command{
@@ -44,24 +52,48 @@ var rootCmd = &cobra.Command{
 
 		// set config
 		configFilePath := viper.GetString("config")
-		var priorityConfig PriorityConfig
+		var config Config
 
 		// check config path exists.
 		if _, err := os.Stat(configFilePath); !os.IsNotExist(err) {
 			fmt.Println("Config file path:", configFilePath)
 
-			// 直接使用 JSON 解析配置文件，避免 Viper 自动拆分带点的键名
-			configData, err := os.ReadFile(configFilePath)
-			if err != nil {
-				fmt.Printf("Error reading config file: %v", err)
+			// 使用 Viper 原生支持 YAML 配置
+			viper.SetConfigFile(configFilePath)
+			viper.SetConfigType("yaml")
+
+			if err := viper.ReadInConfig(); err != nil {
+				fmt.Printf("Error reading config file: %v\n", err)
 				return
 			}
 
-			if err := json.Unmarshal(configData, &priorityConfig); err != nil {
-				fmt.Println("Error unmarshalling config = ", err)
+			if err := viper.Unmarshal(&config); err != nil {
+				fmt.Printf("Error unmarshalling config: %v\n", err)
 				return
 			}
 		}
+
+		// 优先使用命令行的配置覆盖配置文件中的设置
+		// 如果命令行没有设置，则使用配置文件中的值（如果有）
+		excludeDirs := viper.GetStringSlice("exclude")
+		if len(excludeDirs) == 0 && len(config.Exclude) > 0 {
+			excludeDirs = config.Exclude
+		}
+
+		minSize := viper.GetInt64("min-size")
+		if minSize == 0 && config.MinSize > 0 {
+			minSize = config.MinSize
+		}
+
+		maxSize := viper.GetInt64("max-size")
+		if maxSize == 0 && config.MaxSize > 0 {
+			maxSize = config.MaxSize
+		}
+
+		// 设置 viper 的值，以便在 findDuplicateFiles 中使用
+		viper.Set("exclude", excludeDirs)
+		viper.Set("min-size", minSize)
+		viper.Set("max-size", maxSize)
 		// get path
 		path := viper.GetString("path")
 		fmt.Println("==================================")
@@ -83,13 +115,13 @@ var rootCmd = &cobra.Command{
 		}
 		fmt.Println()
 		// 处理重复文件
-		duplicateFileHandler(duplicateFiles, priorityConfig, dryRun, path)
+		duplicateFileHandler(duplicateFiles, config, dryRun, path)
 	},
 }
 
 func init() {
 	rootCmd.PersistentFlags().StringP("path", "p", "", "Path of search for duplicate files")
-	rootCmd.PersistentFlags().StringP("config", "c", "", "Path of config file,e.g. ./config.json")
+	rootCmd.PersistentFlags().StringP("config", "c", "", "Path of config file, e.g. ./config.yaml")
 	rootCmd.PersistentFlags().BoolP("version", "v", false, "Print fdf version.")
 	// --dry-run -n: 参考自rsync
 	rootCmd.PersistentFlags().BoolP("dry-run", "n", false, "Dry run,dont delete.")
@@ -273,7 +305,7 @@ func findDuplicateFiles(searchPath string) map[string][]string {
 // 保留排序后列表的第一个文件，获取第一个文件的权重。
 // 处理第一个文件之后的文件列表，根据权重，删除文件。
 // 优先级判断策略：考虑目录深度，父路径的权重大于子目录，只在同级目录之间比较
-func duplicateFileHandler(duplicateFiles map[string][]string, priorityConfig PriorityConfig, dryRun bool, searchPath string) {
+func duplicateFileHandler(duplicateFiles map[string][]string, config Config, dryRun bool, searchPath string) {
 	if len(duplicateFiles) == 0 {
 		return
 	}
@@ -282,12 +314,12 @@ func duplicateFileHandler(duplicateFiles map[string][]string, priorityConfig Pri
 		fmt.Printf("Processing duplicate files with hash: %s\n", hash)
 		// 对paths进行排序，排序规则是基于目录深度和优先级
 		sort.Slice(paths, func(i, j int) bool {
-			return comparePathPriority(paths[i], paths[j], priorityConfig)
+			return comparePathPriority(paths[i], paths[j], config)
 		})
 		// keep the first file
 		firstFile := paths[0]
 		// 获取第一个文件的一级目录信息（用于显示决策策略）
-		firstLevelPriority1, firstLevelDepth1, firstLevelDir1 := getFirstLevelDirInfo(firstFile, priorityConfig)
+		firstLevelPriority1, firstLevelDepth1, firstLevelDir1 := getFirstLevelDirInfo(firstFile, config)
 		fmt.Printf("\tKeeping file: %s (priority: %d, depth: %d, dir: %s)\n", firstFile, firstLevelPriority1, firstLevelDepth1, firstLevelDir1)
 		// 处理第一个文件之后的文件列表
 		for i := 1; i < len(paths); i++ {
@@ -301,10 +333,10 @@ func duplicateFileHandler(duplicateFiles map[string][]string, priorityConfig Pri
 				continue
 			}
 			// 获取当前文件的一级目录信息（用于显示决策策略）
-			firstLevelPriority2, firstLevelDepth2, firstLevelDir2 := getFirstLevelDirInfo(path, priorityConfig)
+			firstLevelPriority2, firstLevelDepth2, firstLevelDir2 := getFirstLevelDirInfo(path, config)
 			// 获取完整的优先级信息用于比较
-			_, firstDepth, firstMatchedDir := getPathPriority(firstFile, priorityConfig)
-			_, pathDepth, pathMatchedDir := getPathPriority(path, priorityConfig)
+			_, firstDepth, firstMatchedDir := getPathPriority(firstFile, config)
+			_, pathDepth, pathMatchedDir := getPathPriority(path, config)
 			// 如果匹配到同一个目录，深度大的删除；否则按排序结果删除
 			if firstMatchedDir == pathMatchedDir && firstMatchedDir != "" {
 				// 同级目录之间比较，深度大的删除
@@ -347,7 +379,7 @@ func duplicateFileHandler(duplicateFiles map[string][]string, priorityConfig Pri
 // 3. 如果一级目录不在配置中，向后查找子目录，使用第一个在配置中的子目录的优先级
 // 4. 如果没有找到配置中的目录，使用默认优先级
 // 返回优先级值、目录深度和匹配的目录名
-func getPathPriority(filePath string, priorityConfig PriorityConfig) (int, int, string) {
+func getPathPriority(filePath string, config Config) (int, int, string) {
 	// 获取文件的目录路径
 	dirPath := filepath.Dir(filePath)
 	// 分割路径为各个目录组件
@@ -364,31 +396,31 @@ func getPathPriority(filePath string, priorityConfig PriorityConfig) (int, int, 
 
 	// 如果没有目录，返回默认值
 	if len(dirs) == 0 {
-		return priorityConfig.DefaultPriority, 0, ""
+		return config.DefaultPriority, 0, ""
 	}
 
 	// 检查一级目录是否在配置中
 	firstLevelDir := dirs[0]
-	if priority, ok := priorityConfig.DirectoryPriority[firstLevelDir]; ok {
+	if priority, ok := config.DirectoryPriority[firstLevelDir]; ok {
 		return priority, 1, firstLevelDir
 	}
 
 	// 如果一级目录不在配置中，向后查找子目录
 	for i := 1; i < len(dirs); i++ {
 		dir := dirs[i]
-		if priority, ok := priorityConfig.DirectoryPriority[dir]; ok {
+		if priority, ok := config.DirectoryPriority[dir]; ok {
 			return priority, i + 1, dir
 		}
 	}
 
 	// 如果没有找到配置中的目录，返回默认值
-	return priorityConfig.DefaultPriority, len(dirs), ""
+	return config.DefaultPriority, len(dirs), ""
 }
 
 // getFirstLevelDirInfo 获取文件路径的一级目录信息（用于显示决策策略）
 // 返回一级目录的优先级、深度和目录名
 // 如果一级目录不在配置中，返回默认优先级
-func getFirstLevelDirInfo(filePath string, priorityConfig PriorityConfig) (int, int, string) {
+func getFirstLevelDirInfo(filePath string, config Config) (int, int, string) {
 	// 获取文件的目录路径
 	dirPath := filepath.Dir(filePath)
 	// 分割路径为各个目录组件
@@ -405,16 +437,16 @@ func getFirstLevelDirInfo(filePath string, priorityConfig PriorityConfig) (int, 
 
 	// 如果没有目录，返回默认值
 	if len(dirs) == 0 {
-		return priorityConfig.DefaultPriority, 0, ""
+		return config.DefaultPriority, 0, ""
 	}
 
 	// 获取一级目录
 	firstLevelDir := dirs[0]
-	if priority, ok := priorityConfig.DirectoryPriority[firstLevelDir]; ok {
+	if priority, ok := config.DirectoryPriority[firstLevelDir]; ok {
 		return priority, 1, firstLevelDir
 	}
 	// 如果一级目录不在配置中，返回默认优先级和一级目录名
-	return priorityConfig.DefaultPriority, 1, firstLevelDir
+	return config.DefaultPriority, 1, firstLevelDir
 }
 
 // comparePathPriority 比较两个文件路径的优先级
@@ -423,10 +455,10 @@ func getFirstLevelDirInfo(filePath string, priorityConfig PriorityConfig) (int, 
 // 2. 如果一级目录的权重相同，再比较子目录的权重
 // 3. 如果优先级相同，深度小的优先（父目录优先）
 // 4. 如果都相同，按路径字典序排序
-func comparePathPriority(path1, path2 string, priorityConfig PriorityConfig) bool {
+func comparePathPriority(path1, path2 string, config Config) bool {
 	// 获取一级目录信息
-	priority1, _, _ := getFirstLevelDirInfo(path1, priorityConfig)
-	priority2, _, _ := getFirstLevelDirInfo(path2, priorityConfig)
+	priority1, _, _ := getFirstLevelDirInfo(path1, config)
+	priority2, _, _ := getFirstLevelDirInfo(path2, config)
 
 	// 首先比较一级目录的权重（权重小的优先）
 	if priority1 != priority2 {
@@ -434,8 +466,8 @@ func comparePathPriority(path1, path2 string, priorityConfig PriorityConfig) boo
 	}
 
 	// 如果一级目录的权重相同，再比较子目录的权重
-	fullPriority1, fullDepth1, matchedDir1 := getPathPriority(path1, priorityConfig)
-	fullPriority2, fullDepth2, matchedDir2 := getPathPriority(path2, priorityConfig)
+	fullPriority1, fullDepth1, matchedDir1 := getPathPriority(path1, config)
+	fullPriority2, fullDepth2, matchedDir2 := getPathPriority(path2, config)
 
 	// 如果匹配到同一个优先级目录，比较深度（深度小的优先）
 	if matchedDir1 == matchedDir2 && matchedDir1 != "" {

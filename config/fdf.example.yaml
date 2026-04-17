@@ -1,0 +1,11 @@
+info: "Lower values indicate higher priority for directory retention"
+default_priority: 99
+directory_priority:
+  aaa: 998
+  bbb: 3
+  ccc: 2
+exclude:
+  - "@eaDir"
+  - ".git"
+min_size: 0
+max_size: 0
