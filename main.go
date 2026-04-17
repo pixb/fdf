@@ -83,7 +83,7 @@ var rootCmd = &cobra.Command{
 		}
 		fmt.Println()
 		// 处理重复文件
-		duplicateFileHandler(duplicateFiles, priorityConfig, dryRun)
+		duplicateFileHandler(duplicateFiles, priorityConfig, dryRun, path)
 	},
 }
 
@@ -128,7 +128,7 @@ func init() {
 // 存入map集合中，key为hash值，value为文件路径列表，因为可能有重复的文件。
 // 遍历map集合，如果value的长度大于1，则输出日志。
 // 返回重复文件大于1的文件列表组成的map集合。
-func findDuplicateFiles(path string) map[string][]string {
+func findDuplicateFiles(searchPath string) map[string][]string {
 	// 获取排除目录列表
 	excludeDirs := viper.GetStringSlice("exclude")
 	// 获取文件大小限制
@@ -138,7 +138,7 @@ func findDuplicateFiles(path string) map[string][]string {
 	fmt.Println("Scanning directory for files...")
 	// 遍历数据目录，收集所有文件路径
 	var filePaths []string
-	err := filepath.WalkDir(path, func(path string, info os.DirEntry, err error) error {
+	err := filepath.WalkDir(searchPath, func(path string, info os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -177,7 +177,13 @@ func findDuplicateFiles(path string) map[string][]string {
 			return nil
 		}
 
-		filePaths = append(filePaths, path)
+		// 将文件路径转换为相对于搜索路径的路径
+		relPath, err := filepath.Rel(searchPath, path)
+		if err != nil {
+			filePaths = append(filePaths, path)
+		} else {
+			filePaths = append(filePaths, relPath)
+		}
 		return nil
 	})
 	if err != nil {
@@ -217,7 +223,9 @@ func findDuplicateFiles(path string) map[string][]string {
 
 	// 发送文件路径到通道
 	for _, path := range filePaths {
-		fileChan <- path
+		// 发送完整路径用于计算哈希
+		fullPath := filepath.Join(searchPath, path)
+		fileChan <- fullPath
 	}
 	close(fileChan)
 
@@ -236,7 +244,13 @@ func findDuplicateFiles(path string) map[string][]string {
 			fmt.Printf("Error calculating hash for %s: %v\n", result.path, result.err)
 			continue
 		}
-		fileMap[result.hash] = append(fileMap[result.hash], result.path)
+		// 存储相对路径用于后续处理
+		relPath, err := filepath.Rel(searchPath, result.path)
+		if err != nil {
+			fileMap[result.hash] = append(fileMap[result.hash], result.path)
+		} else {
+			fileMap[result.hash] = append(fileMap[result.hash], relPath)
+		}
 	}
 	fmt.Println("Processing files: 100.0%")
 
@@ -259,7 +273,7 @@ func findDuplicateFiles(path string) map[string][]string {
 // 保留排序后列表的第一个文件，获取第一个文件的权重。
 // 处理第一个文件之后的文件列表，根据权重，删除文件。
 // 优先级判断策略：考虑目录深度，父路径的权重大于子目录，只在同级目录之间比较
-func duplicateFileHandler(duplicateFiles map[string][]string, priorityConfig PriorityConfig, dryRun bool) {
+func duplicateFileHandler(duplicateFiles map[string][]string, priorityConfig PriorityConfig, dryRun bool, searchPath string) {
 	if len(duplicateFiles) == 0 {
 		return
 	}
@@ -278,8 +292,10 @@ func duplicateFileHandler(duplicateFiles map[string][]string, priorityConfig Pri
 		// 处理第一个文件之后的文件列表
 		for i := 1; i < len(paths); i++ {
 			path := paths[i]
+			// 获取完整文件路径
+			fullPath := filepath.Join(searchPath, path)
 			// 获取文件路径权限
-			_, err := os.Stat(path)
+			_, err := os.Stat(fullPath)
 			if err != nil {
 				fmt.Printf("Error getting file info for %s: %v\n", path, err)
 				continue
@@ -295,7 +311,7 @@ func duplicateFileHandler(duplicateFiles map[string][]string, priorityConfig Pri
 				if pathDepth > firstDepth {
 					fmt.Printf("\tDeleting file: %s (priority: %d, depth: %d, dir: %s)\n", path, firstLevelPriority2, firstLevelDepth2, firstLevelDir2)
 					if !dryRun {
-						err := os.Remove(path)
+						err := os.Remove(fullPath)
 						if err != nil {
 							fmt.Printf("\tError deleting file %s: %v\n", path, err)
 							continue
@@ -309,7 +325,7 @@ func duplicateFileHandler(duplicateFiles map[string][]string, priorityConfig Pri
 				// 不同目录，按排序结果删除
 				fmt.Printf("\tDeleting file: %s (priority: %d, depth: %d, dir: %s)\n", path, firstLevelPriority2, firstLevelDepth2, firstLevelDir2)
 				if !dryRun {
-					err := os.Remove(path)
+					err := os.Remove(fullPath)
 					if err != nil {
 						fmt.Printf("\tError deleting file %s: %v\n", path, err)
 						continue
@@ -337,36 +353,36 @@ func getPathPriority(filePath string, priorityConfig PriorityConfig) (int, int, 
 	// 分割路径为各个目录组件
 	dirs := strings.Split(dirPath, string(filepath.Separator))
 
-	// 找到第一个非空目录作为基础目录
-	var baseDirIndex int
-	for i, dir := range dirs {
+	// 过滤掉空目录
+	var nonEmptyDirs []string
+	for _, dir := range dirs {
 		if dir != "" {
-			baseDirIndex = i
-			break
+			nonEmptyDirs = append(nonEmptyDirs, dir)
 		}
+	}
+	dirs = nonEmptyDirs
+
+	// 如果没有目录，返回默认值
+	if len(dirs) == 0 {
+		return priorityConfig.DefaultPriority, 0, ""
 	}
 
 	// 检查一级目录是否在配置中
-	if baseDirIndex+1 < len(dirs) {
-		firstLevelDir := dirs[baseDirIndex+1]
-		if priority, ok := priorityConfig.DirectoryPriority[firstLevelDir]; ok {
-			return priority, 1, firstLevelDir
-		}
+	firstLevelDir := dirs[0]
+	if priority, ok := priorityConfig.DirectoryPriority[firstLevelDir]; ok {
+		return priority, 1, firstLevelDir
 	}
 
 	// 如果一级目录不在配置中，向后查找子目录
-	for i := baseDirIndex + 2; i < len(dirs); i++ {
+	for i := 1; i < len(dirs); i++ {
 		dir := dirs[i]
-		if dir == "" {
-			continue
-		}
 		if priority, ok := priorityConfig.DirectoryPriority[dir]; ok {
-			return priority, i - baseDirIndex, dir
+			return priority, i + 1, dir
 		}
 	}
 
 	// 如果没有找到配置中的目录，返回默认值
-	return priorityConfig.DefaultPriority, len(dirs) - baseDirIndex, ""
+	return priorityConfig.DefaultPriority, len(dirs), ""
 }
 
 // getFirstLevelDirInfo 获取文件路径的一级目录信息（用于显示决策策略）
@@ -378,27 +394,27 @@ func getFirstLevelDirInfo(filePath string, priorityConfig PriorityConfig) (int, 
 	// 分割路径为各个目录组件
 	dirs := strings.Split(dirPath, string(filepath.Separator))
 
-	// 找到第一个非空目录作为基础目录
-	var baseDirIndex int
-	for i, dir := range dirs {
+	// 过滤掉空目录
+	var nonEmptyDirs []string
+	for _, dir := range dirs {
 		if dir != "" {
-			baseDirIndex = i
-			break
+			nonEmptyDirs = append(nonEmptyDirs, dir)
 		}
+	}
+	dirs = nonEmptyDirs
+
+	// 如果没有目录，返回默认值
+	if len(dirs) == 0 {
+		return priorityConfig.DefaultPriority, 0, ""
 	}
 
 	// 获取一级目录
-	if baseDirIndex+1 < len(dirs) {
-		firstLevelDir := dirs[baseDirIndex+1]
-		if priority, ok := priorityConfig.DirectoryPriority[firstLevelDir]; ok {
-			return priority, 1, firstLevelDir
-		}
-		// 如果一级目录不在配置中，返回默认优先级和一级目录名
-		return priorityConfig.DefaultPriority, 1, firstLevelDir
+	firstLevelDir := dirs[0]
+	if priority, ok := priorityConfig.DirectoryPriority[firstLevelDir]; ok {
+		return priority, 1, firstLevelDir
 	}
-
-	// 如果没有一级目录，返回默认值
-	return priorityConfig.DefaultPriority, 0, ""
+	// 如果一级目录不在配置中，返回默认优先级和一级目录名
+	return priorityConfig.DefaultPriority, 1, firstLevelDir
 }
 
 // comparePathPriority 比较两个文件路径的优先级
