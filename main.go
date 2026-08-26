@@ -48,7 +48,9 @@ var rootCmd = &cobra.Command{
 
 		// dry-run
 		dryRun := viper.GetBool("dry-run")
-		fmt.Println("dry-run?", dryRun)
+		if dryRun {
+			fmt.Println("Running in dry-run mode: no files will be deleted.")
+		}
 
 		// set config
 		configFilePath := viper.GetString("config")
@@ -71,6 +73,11 @@ var rootCmd = &cobra.Command{
 				fmt.Printf("Error unmarshalling config: %v\n", err)
 				return
 			}
+		}
+
+		// 文档约定默认优先级为 99，未配置时补全
+		if config.DefaultPriority == 0 {
+			config.DefaultPriority = 99
 		}
 
 		// 优先使用命令行的配置覆盖配置文件中的设置
@@ -96,6 +103,15 @@ var rootCmd = &cobra.Command{
 		viper.Set("max-size", maxSize)
 		// get path
 		path := viper.GetString("path")
+		if path == "" {
+			fmt.Println("Error: --path is required")
+			return
+		}
+		pathInfo, statErr := os.Stat(path)
+		if statErr != nil || !pathInfo.IsDir() {
+			fmt.Printf("Error: path %q is not a valid directory\n", path)
+			return
+		}
 		fmt.Println("==================================")
 		fmt.Printf("path = %s\n", path)
 		fmt.Println("==================================")
@@ -172,18 +188,32 @@ func findDuplicateFiles(searchPath string) map[string][]string {
 	var filePaths []string
 	err := filepath.WalkDir(searchPath, func(path string, info os.DirEntry, err error) error {
 		if err != nil {
-			return err
+			fmt.Printf("Error accessing path %s: %v (skipping)\n", path, err)
+			return nil
 		}
 
 		// 检查是否为目录
 		if info.IsDir() {
 			// 检查是否需要排除该目录
-			dirName := filepath.Base(path)
+			rel, relErr := filepath.Rel(searchPath, path)
+			if relErr != nil {
+				rel = path
+			}
 			for _, exclude := range excludeDirs {
-				if dirName == exclude {
+				// 支持按目录基名精确匹配（原有行为）
+				if filepath.Base(path) == exclude {
+					return filepath.SkipDir
+				}
+				// 也支持按相对路径前缀匹配，避免误伤同名目录
+				if rel == exclude || strings.HasPrefix(rel, exclude+string(filepath.Separator)) {
 					return filepath.SkipDir
 				}
 			}
+			return nil
+		}
+
+		// 只处理普通文件，跳过符号链接/管道/设备等
+		if !info.Type().IsRegular() {
 			return nil
 		}
 
@@ -318,9 +348,9 @@ func duplicateFileHandler(duplicateFiles map[string][]string, config Config, dry
 		})
 		// keep the first file
 		firstFile := paths[0]
-		// 获取第一个文件的一级目录信息（用于显示决策策略）
-		firstLevelPriority1, firstLevelDepth1, firstLevelDir1 := getFirstLevelDirInfo(firstFile, config)
-		fmt.Printf("\tKeeping file: %s (priority: %d, depth: %d, dir: %s)\n", firstFile, firstLevelPriority1, firstLevelDepth1, firstLevelDir1)
+		// 获取第一个文件的优先级信息（用于显示决策策略）
+		firstPriority1, firstDepth1, firstDir1 := getPathPriority(firstFile, config)
+		fmt.Printf("\tKeeping file: %s (priority: %d, depth: %d, dir: %s)\n", firstFile, firstPriority1, firstDepth1, firstDir1)
 		// 处理第一个文件之后的文件列表
 		for i := 1; i < len(paths); i++ {
 			path := paths[i]
@@ -332,16 +362,15 @@ func duplicateFileHandler(duplicateFiles map[string][]string, config Config, dry
 				fmt.Printf("Error getting file info for %s: %v\n", path, err)
 				continue
 			}
-			// 获取当前文件的一级目录信息（用于显示决策策略）
-			firstLevelPriority2, firstLevelDepth2, firstLevelDir2 := getFirstLevelDirInfo(path, config)
-			// 获取完整的优先级信息用于比较
+			// 获取当前文件的完整优先级信息（用于显示决策策略）
+			pathPriority, pathDepth, pathMatchedDir := getPathPriority(path, config)
+			// 获取第一个文件的完整优先级信息用于比较
 			_, firstDepth, firstMatchedDir := getPathPriority(firstFile, config)
-			_, pathDepth, pathMatchedDir := getPathPriority(path, config)
 			// 如果匹配到同一个目录，深度大的删除；否则按排序结果删除
 			if firstMatchedDir == pathMatchedDir && firstMatchedDir != "" {
 				// 同级目录之间比较，深度大的删除
 				if pathDepth > firstDepth {
-					fmt.Printf("\tDeleting file: %s (priority: %d, depth: %d, dir: %s)\n", path, firstLevelPriority2, firstLevelDepth2, firstLevelDir2)
+					fmt.Printf("\tDeleting file: %s (priority: %d, depth: %d, dir: %s)\n", path, pathPriority, pathDepth, pathMatchedDir)
 					if !dryRun {
 						err := os.Remove(fullPath)
 						if err != nil {
@@ -351,11 +380,11 @@ func duplicateFileHandler(duplicateFiles map[string][]string, config Config, dry
 						fmt.Printf("\tSuccessfully deleted file: %s\n", path)
 					}
 				} else {
-					fmt.Printf("\tKeeping file: %s (priority: %d, depth: %d, dir: %s)\n", path, firstLevelPriority2, firstLevelDepth2, firstLevelDir2)
+					fmt.Printf("\tKeeping file: %s (priority: %d, depth: %d, dir: %s)\n", path, pathPriority, pathDepth, pathMatchedDir)
 				}
 			} else {
 				// 不同目录，按排序结果删除
-				fmt.Printf("\tDeleting file: %s (priority: %d, depth: %d, dir: %s)\n", path, firstLevelPriority2, firstLevelDepth2, firstLevelDir2)
+				fmt.Printf("\tDeleting file: %s (priority: %d, depth: %d, dir: %s)\n", path, pathPriority, pathDepth, pathMatchedDir)
 				if !dryRun {
 					err := os.Remove(fullPath)
 					if err != nil {
@@ -385,10 +414,10 @@ func getPathPriority(filePath string, config Config) (int, int, string) {
 	// 分割路径为各个目录组件
 	dirs := strings.Split(dirPath, string(filepath.Separator))
 
-	// 过滤掉空目录
+	// 过滤掉空目录和 "." 组件
 	var nonEmptyDirs []string
 	for _, dir := range dirs {
-		if dir != "" {
+		if dir != "" && dir != "." {
 			nonEmptyDirs = append(nonEmptyDirs, dir)
 		}
 	}
@@ -426,10 +455,10 @@ func getFirstLevelDirInfo(filePath string, config Config) (int, int, string) {
 	// 分割路径为各个目录组件
 	dirs := strings.Split(dirPath, string(filepath.Separator))
 
-	// 过滤掉空目录
+	// 过滤掉空目录和 "." 组件
 	var nonEmptyDirs []string
 	for _, dir := range dirs {
-		if dir != "" {
+		if dir != "" && dir != "." {
 			nonEmptyDirs = append(nonEmptyDirs, dir)
 		}
 	}

@@ -28,9 +28,6 @@ cd fdf
 # Build the binary
 make build
 
-# Or directly with go
-go build -o fdf main.go
-
 # Install (optional)
 make install
 ```

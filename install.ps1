@@ -6,9 +6,9 @@ if (!(Test-Path "main.go") -or !(Test-Path "go.mod")) {
     exit 1
 }
 
-# 定义变量
+# 定义变量（版本从 VERSION 文件读取，单一来源）
 $BINARY_NAME = "fdf"
-$VERSION = "0.0.2"
+$VERSION = (Get-Content VERSION -Raw).Trim()
 
 Write-Host "正在安装 $BINARY_NAME 版本 $VERSION..." -ForegroundColor Green
 

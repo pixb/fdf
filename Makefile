@@ -1,5 +1,5 @@
 BINARY_NAME := fdf
-VERSION := 0.0.2
+VERSION := $(shell cat VERSION 2>/dev/null | tr -d '[:space:]')
 .PHONY: build install clean test
 
 build:
