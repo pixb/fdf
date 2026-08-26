@@ -352,6 +352,8 @@ func duplicateFileHandler(duplicateFiles map[string][]string, config Config, dry
 		firstPriority1, firstDepth1, firstDir1 := getPathPriority(firstFile, config)
 		fmt.Printf("\tKeeping file: %s (priority: %d, depth: %d, dir: %s)\n", firstFile, firstPriority1, firstDepth1, firstDir1)
 		// 处理第一个文件之后的文件列表
+		// 排序后 paths[0] 即为保留文件（按优先级、深度、路径字典序确定的唯一代表）
+		// 其余均为重复文件，统一删除，确保每组只保留一份
 		for i := 1; i < len(paths); i++ {
 			path := paths[i]
 			// 获取完整文件路径
@@ -364,35 +366,14 @@ func duplicateFileHandler(duplicateFiles map[string][]string, config Config, dry
 			}
 			// 获取当前文件的完整优先级信息（用于显示决策策略）
 			pathPriority, pathDepth, pathMatchedDir := getPathPriority(path, config)
-			// 获取第一个文件的完整优先级信息用于比较
-			_, firstDepth, firstMatchedDir := getPathPriority(firstFile, config)
-			// 如果匹配到同一个目录，深度大的删除；否则按排序结果删除
-			if firstMatchedDir == pathMatchedDir && firstMatchedDir != "" {
-				// 同级目录之间比较，深度大的删除
-				if pathDepth > firstDepth {
-					fmt.Printf("\tDeleting file: %s (priority: %d, depth: %d, dir: %s)\n", path, pathPriority, pathDepth, pathMatchedDir)
-					if !dryRun {
-						err := os.Remove(fullPath)
-						if err != nil {
-							fmt.Printf("\tError deleting file %s: %v\n", path, err)
-							continue
-						}
-						fmt.Printf("\tSuccessfully deleted file: %s\n", path)
-					}
-				} else {
-					fmt.Printf("\tKeeping file: %s (priority: %d, depth: %d, dir: %s)\n", path, pathPriority, pathDepth, pathMatchedDir)
+			fmt.Printf("\tDeleting file: %s (priority: %d, depth: %d, dir: %s)\n", path, pathPriority, pathDepth, pathMatchedDir)
+			if !dryRun {
+				err := os.Remove(fullPath)
+				if err != nil {
+					fmt.Printf("\tError deleting file %s: %v\n", path, err)
+					continue
 				}
-			} else {
-				// 不同目录，按排序结果删除
-				fmt.Printf("\tDeleting file: %s (priority: %d, depth: %d, dir: %s)\n", path, pathPriority, pathDepth, pathMatchedDir)
-				if !dryRun {
-					err := os.Remove(fullPath)
-					if err != nil {
-						fmt.Printf("\tError deleting file %s: %v\n", path, err)
-						continue
-					}
-					fmt.Printf("\tSuccessfully deleted file: %s\n", path)
-				}
+				fmt.Printf("\tSuccessfully deleted file: %s\n", path)
 			}
 		}
 		fmt.Println()
